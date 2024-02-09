@@ -1,15 +1,18 @@
 use std::error::Error;
+use std::ffi::CString;
 use std::ops::Add;
 use std::path::Path;
 use sysinfo::Process;
 use process_memory::{DataMember, LocalMember, Memory, Pid, ProcessHandle, TryIntoProcessHandle};
+use widestring::WideCString;
 use winapi::ctypes::c_void;
-use winapi::shared::minwindef::{DWORD, LPDWORD, LPVOID};
-use winapi::um::libloaderapi::GetModuleHandleA;
+use winapi::shared::minwindef::{BOOL, DWORD, LPDWORD, LPVOID};
+use winapi::um::errhandlingapi::GetLastError;
+use winapi::um::libloaderapi::{GetModuleHandleA, GetModuleHandleW};
 use winapi::um::memoryapi::VirtualFreeEx;
 use winapi::um::minwinbase::{LPSECURITY_ATTRIBUTES, LPTHREAD_START_ROUTINE, PTHREAD_START_ROUTINE, SECURITY_ATTRIBUTES};
-use winapi::um::processthreadsapi::CreateProcessA;
-use winapi::um::winnt::{CHAR, LPCSTR, MEM_COMMIT, MEM_RELEASE, PAGE_READWRITE};
+use winapi::um::processthreadsapi::{CreateProcessA, OpenProcess};
+use winapi::um::winnt::{CHAR, LPCSTR, MEM_COMMIT, MEM_RELEASE, PAGE_READWRITE, PROCESS_ALL_ACCESS};
 
 pub enum InjectionMethod {
     Standard,
@@ -64,12 +67,17 @@ impl<'a> InjectionMethod {
     }
 
     fn handle_standard(target: &'a Target, handle: ProcessHandle) -> anyhow::Result<InjectionOutcome, InjectionError> {
+        // Open Process
+        let handle = unsafe {
+            OpenProcess(PROCESS_ALL_ACCESS, BOOL::from(false), target.process.pid().as_u32())
+        };
+
         // Allocate Memory
         println!("Allocating Memory");
         let mut state = target.dll_path.to_str().unwrap().to_string();
         let mut state_ptr = state.as_ptr().cast();
         let lp_dll_path = unsafe {
-             winapi::um::memoryapi::VirtualAllocEx(handle.0, *state_ptr, target.dll_path.iter().count() + 1, MEM_COMMIT, PAGE_READWRITE)
+            winapi::um::memoryapi::VirtualAllocEx(handle.clone(), std::ptr::null_mut(), state.len(), MEM_COMMIT, PAGE_READWRITE)
         };
         println!("dll path: {:?}", lp_dll_path);
 
@@ -77,29 +85,31 @@ impl<'a> InjectionMethod {
         println!("Writing to  Memory");
         unsafe {
             let mut bw = 0;
-            winapi::um::memoryapi::WriteProcessMemory(handle.0, lp_dll_path, *state_ptr, state.len() + 1, &mut bw);
+            winapi::um::memoryapi::WriteProcessMemory(handle.clone(), lp_dll_path, *state_ptr, state.len(), &mut bw);
         }
 
         // Launch Thread
         println!("Launching Thread");
         let thread = unsafe {
-            let ker: LPCSTR = "Kernel32.dll" as *const _ as *const CHAR;
-            let lla = "LoadLibraryA.dll" as *const _ as *const CHAR;
+            // let ker = CString::new("Kernel32").expect("CString Failed");
+            let lla = CString::new("LoadLibraryA").expect("CString Failed");
+
+            let ker = WideCString::from_str("Kernel32").expect("WideCString Failed");
+            // let lla = WideCString::from_str("LoadLibraryA").expect("WideCString Failed");
 
             println!("Getting Kernel");
-            let handle_a = GetModuleHandleA(ker);
+            let handle_a = GetModuleHandleW(ker.as_ptr());
+            let err_d = GetLastError();
             println!("Getting process address");
-            let proc_addr = winapi::um::libloaderapi::GetProcAddress(handle_a, lla);
+            let proc_addr = winapi::um::libloaderapi::GetProcAddress(handle_a, lla.as_ptr());
+            let err = GetLastError();
             let mut thread_id= 0;
 
             println!("Routine Cast");
             let routine = proc_addr.cast();
-            println!("Setting Null Pointer");
-            let null_ptr = std::ptr::null_mut();
-
 
             println!("Creating remote thread");
-            winapi::um::processthreadsapi::CreateRemoteThread(handle.0, null_ptr,0, *routine, lp_dll_path,0, &mut thread_id)
+            winapi::um::processthreadsapi::CreateRemoteThread(handle.clone(), std::ptr::null_mut(),0, *routine, lp_dll_path,0, &mut thread_id)
         };
 
         // Wait for thread to execute
@@ -111,7 +121,7 @@ impl<'a> InjectionMethod {
         // Free Memory
         println!("Freeing Memory");
         unsafe {
-            VirtualFreeEx(handle.0, lp_dll_path, state.len() + 1, MEM_RELEASE);
+            VirtualFreeEx(handle.clone(), lp_dll_path, state.len() + 1, MEM_RELEASE);
         }
 
         let outcome = InjectionOutcome {
