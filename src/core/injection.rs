@@ -9,10 +9,10 @@ use winapi::ctypes::c_void;
 use winapi::shared::minwindef::{BOOL, DWORD, LPDWORD, LPVOID};
 use winapi::um::errhandlingapi::GetLastError;
 use winapi::um::libloaderapi::{GetModuleHandleA, GetModuleHandleW};
-use winapi::um::memoryapi::VirtualFreeEx;
+use winapi::um::memoryapi::{VirtualFreeEx, VirtualProtectEx, WriteProcessMemory};
 use winapi::um::minwinbase::{LPSECURITY_ATTRIBUTES, LPTHREAD_START_ROUTINE, PTHREAD_START_ROUTINE, SECURITY_ATTRIBUTES};
 use winapi::um::processthreadsapi::{CreateProcessA, OpenProcess};
-use winapi::um::winnt::{CHAR, LPCSTR, MEM_COMMIT, MEM_RELEASE, PAGE_READWRITE, PROCESS_ALL_ACCESS};
+use winapi::um::winnt::{CHAR, HANDLE, LPCSTR, MEM_COMMIT, MEM_RELEASE, PAGE_EXECUTE_READWRITE, PAGE_READWRITE, PROCESS_ALL_ACCESS};
 
 pub enum InjectionMethod {
     Standard,
@@ -75,9 +75,8 @@ impl<'a> InjectionMethod {
         // Allocate Memory
         println!("Allocating Memory");
         let mut state = target.dll_path.to_str().unwrap().to_string();
-        let mut state_ptr = state.as_ptr().cast();
         let lp_dll_path = unsafe {
-            winapi::um::memoryapi::VirtualAllocEx(handle.clone(), std::ptr::null_mut(), state.len(), MEM_COMMIT, PAGE_READWRITE)
+            winapi::um::memoryapi::VirtualAllocEx(handle, std::ptr::null_mut(), state.len(), MEM_COMMIT, PAGE_EXECUTE_READWRITE)
         };
         println!("dll path: {:?}", lp_dll_path);
 
@@ -85,7 +84,12 @@ impl<'a> InjectionMethod {
         println!("Writing to  Memory");
         unsafe {
             let mut bw = 0;
-            winapi::um::memoryapi::WriteProcessMemory(handle.clone(), lp_dll_path, *state_ptr, state.len(), &mut bw);
+            // winapi::um::memoryapi::WriteProcessMemory(handle, lp_dll_path, *state_ptr, state.len(), &mut bw);
+            InjectionMethod::patch_memory(handle, lp_dll_path, state.as_bytes());
+
+
+            let err = GetLastError();
+            println!("err: {:?}", err);
         }
 
         // Launch Thread
@@ -94,22 +98,26 @@ impl<'a> InjectionMethod {
             // let ker = CString::new("Kernel32").expect("CString Failed");
             let lla = CString::new("LoadLibraryA").expect("CString Failed");
 
-            let ker = WideCString::from_str("Kernel32").expect("WideCString Failed");
+            let ker = WideCString::from_str("kernel32").expect("WideCString Failed");
             // let lla = WideCString::from_str("LoadLibraryA").expect("WideCString Failed");
 
             println!("Getting Kernel");
             let handle_a = GetModuleHandleW(ker.as_ptr());
             let err_d = GetLastError();
+            println!("Last Error: {:?}", err_d);
             println!("Getting process address");
             let proc_addr = winapi::um::libloaderapi::GetProcAddress(handle_a, lla.as_ptr());
             let err = GetLastError();
-            let mut thread_id= 0;
+            println!("Last Error: {:?}", err);
 
-            println!("Routine Cast");
+            let mut thread_id= 0;
             let routine = proc_addr.cast();
 
             println!("Creating remote thread");
-            winapi::um::processthreadsapi::CreateRemoteThread(handle.clone(), std::ptr::null_mut(),0, *routine, lp_dll_path,0, &mut thread_id)
+            let out = winapi::um::processthreadsapi::CreateRemoteThread(handle, std::ptr::null_mut(),0, *routine, lp_dll_path,0, &mut thread_id);
+            let err_a = GetLastError();
+            println!("Err_A: {:?}", err_a);
+            out
         };
 
         // Wait for thread to execute
@@ -121,7 +129,7 @@ impl<'a> InjectionMethod {
         // Free Memory
         println!("Freeing Memory");
         unsafe {
-            VirtualFreeEx(handle.clone(), lp_dll_path, state.len() + 1, MEM_RELEASE);
+            VirtualFreeEx(handle, lp_dll_path, state.len() + 1, MEM_RELEASE);
         }
 
         let outcome = InjectionOutcome {
@@ -129,5 +137,20 @@ impl<'a> InjectionMethod {
         };
 
         Ok(outcome)
+    }
+
+    unsafe fn patch_memory(handle: HANDLE, address: LPVOID, data: &[u8]) -> bool {
+        let mut old_prot: DWORD = 0;
+        if VirtualProtectEx(handle, address, data.len(), PAGE_EXECUTE_READWRITE, &mut old_prot) != 0 {
+            let mut b_w = 0;
+            if WriteProcessMemory(handle, address, data.as_ptr() as LPVOID, data.len(), &mut b_w) != 0 {
+                return true;
+            }
+        }
+
+        let err = GetLastError();
+        println!("err: {:?}", err);
+
+        false
     }
 }
