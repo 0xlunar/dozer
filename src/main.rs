@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::time::Duration;
 use sysinfo;
 use sysinfo::System;
 use crate::core::injection::InjectionMethod::Standard;
@@ -20,5 +21,7 @@ fn main() {
         Ok(t) => println!("Outcome: {:?}", t.memory_address),
         Err(e) => println!("Error: {:?}", e),
     }
+
+    std::thread::sleep(Duration::from_secs(10));
 }
 
