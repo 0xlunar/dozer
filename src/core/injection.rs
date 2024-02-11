@@ -5,7 +5,7 @@ use winapi::shared::minwindef::{BOOL, DWORD, LPVOID};
 use winapi::um::libloaderapi::{GetModuleHandleA};
 use winapi::um::memoryapi::{VirtualFreeEx, VirtualProtectEx, WriteProcessMemory};
 use winapi::um::processthreadsapi::{OpenProcess};
-use winapi::um::winnt::{HANDLE, MEM_COMMIT, MEM_RELEASE, PAGE_EXECUTE_READWRITE, PAGE_READWRITE, PROCESS_ALL_ACCESS};
+use winapi::um::winnt::{HANDLE, MEM_COMMIT, MEM_RELEASE, PAGE_EXECUTE_READWRITE, PROCESS_ALL_ACCESS};
 use crate::core::injection::InjectionError::{NullProcess, WriteMemory};
 
 pub enum InjectionMethod {
@@ -39,6 +39,7 @@ impl<'a> Target<'a> {
     }
 
     pub fn inject(&self) -> anyhow::Result<InjectionOutcome, InjectionError> {
+        println!("Injecting...");
         self.method.inject(self)
     }
 }
@@ -63,7 +64,7 @@ impl<'a> InjectionMethod {
         // Allocate Memory
         let state = CString::new(target.dll_path.to_str().unwrap().to_string()).expect("CString::new Failed");
         let lp_dll_path = unsafe {
-            winapi::um::memoryapi::VirtualAllocEx(handle, std::ptr::null_mut(), state.as_bytes_with_nul().len(), MEM_COMMIT, PAGE_READWRITE)
+            winapi::um::memoryapi::VirtualAllocEx(handle, std::ptr::null_mut(), state.as_bytes_with_nul().len(), MEM_COMMIT, PAGE_EXECUTE_READWRITE)
         };
 
         unsafe {
@@ -107,6 +108,8 @@ impl<'a> InjectionMethod {
         unsafe {
             VirtualFreeEx(handle, lp_dll_path, state.as_bytes_with_nul().len(), MEM_RELEASE);
         }
+
+        println!("Injected!");
 
         Ok(outcome)
     }
